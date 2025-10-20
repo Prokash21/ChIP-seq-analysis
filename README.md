@@ -2,6 +2,38 @@
 
 ### Snakemake pipelines
 
+## Run pipeline with an SRA list
+
+This repository includes a convenience rule to download SRA runs listed in `pipeline/SRR_Acc_List.txt` using `sra-tools` (fasterq-dump). To use it you need Snakemake and Conda installed locally. Example steps:
+
+1. Install Miniconda (or use WSL + conda) and create an environment with Snakemake:
+
+```powershell
+# install miniconda from https://docs.conda.io/en/latest/miniconda.html
+conda create -n chipseq snakemake -c bioconda -c conda-forge -y
+conda activate chipseq
+```
+
+2. From the `snakemake_ChIPseq_pipeline` directory run Snakemake. The pipeline will use the `pipeline/SRR_Acc_List.txt` file to discover runs.
+
+```powershell
+cd snakemake_ChIPseq_pipeline
+# perform a dry-run first
+snakemake -n --use-conda
+# to run and allow conda env creation
+snakemake -j 4 --use-conda
+```
+
+3. Outputs and plots
+
+- Per-sample FastQC zips/html: `02fqc/`
+- Cleaned FASTQ: `03seqClean/`
+- BAMs and indices: `04aln/`
+- Peaks: `05peak/`
+- Place any summary figures you generate (coverage plots, QC summaries) into the repository `images/` folder and reference them from this README.
+
+Note: The pipeline was originally written for a cluster environment with `module load` calls. When running locally, ensure the Conda-provided tools have correct versions (Bowtie1, samtools 1.2, MACS). If MACS1.4 is not available, MACS2 can be used by editing the `call_peaks` rule.
+
 I developed a Snakemake based ChIP-seq pipeline: [pyflow-ChIPseq](https://github.com/crazyhottommy/pyflow-ChIPseq).
 and ATACseq pipeline: [pyflow-ATACseq](https://github.com/crazyhottommy/pyflow-ATACseq)
 

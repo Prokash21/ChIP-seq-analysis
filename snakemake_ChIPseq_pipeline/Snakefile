@@ -6,23 +6,35 @@ localrules: all
 # localrules will let the rule run locally rather than submitting to cluster
 # computing nodes, this is for very small jobs
 
-## list all samples
-CONTROLS = ["sampleG1","sampleG2"]
-CASES = ["sampleA", "sampleB"]
+import os
+
+# Dynamic sample discovery: if a file with SRA accessions is present (pipeline/SRR_Acc_List.txt)
+# use those SRR IDs as sample names. Otherwise fallback to hard-coded samples.
+SRR_LIST_FILE = "../pipeline/SRR_Acc_List.txt"
+if os.path.exists(SRR_LIST_FILE):
+    with open(SRR_LIST_FILE) as f:
+        ALL_SAMPLES = [l.strip() for l in f if l.strip()]
+    # No controls defined by default when using SRR list; user can supply controls manually
+    CONTROLS = []
+    CASES = ALL_SAMPLES
+else:
+    ## list all samples (default)
+    CONTROLS = ["sampleG1","sampleG2"]
+    CASES = ["sampleA", "sampleB"]
+    ALL_SAMPLES = CONTROLS + CASES
 
 
 ## list BAM files
-CONTROL_BAM = expand("04aln/{sample}.sorted.bam", sample=CONTROLS)
-CASE_BAM = expand("04aln/{sample}.sorted.bam", sample=CASES)
+CONTROL_BAM = expand("04aln/{sample}.sorted.bam", sample=CONTROLS) if CONTROLS else []
+CASE_BAM = expand("04aln/{sample}.sorted.bam", sample=CASES) if CASES else []
 
 ## create target for peak-calling: will call the rule call_peaks in order to generate bed files
 ## note: the "zip" function allow the correct pairing of the BAM files
-ALL_PEAKS   = expand("05peak/{case}_vs_{control}_peaks.bed", zip, case=CASES, control=CONTROLS)
-ALL_SAMPLES = CONTROLS + CASES
-ALL_BAM     = CONTROL_BAM + CASE_BAM
-ALL_FASTQ   = expand("01seq/{sample}.fastq", sample = ALL_SAMPLES)
+ALL_PEAKS = expand("05peak/{case}_vs_{control}_peaks.bed", zip, case=CASES, control=CONTROLS) if CONTROLS and CASES else []
+ALL_BAM = CONTROL_BAM + CASE_BAM
+ALL_FASTQ = expand("01seq/{sample}.fastq", sample = ALL_SAMPLES)
 ALL_CLEAN_FASTQ = expand("03seqClean/{sample}_clean.fastq", sample = ALL_SAMPLES)
-ALL_FASTQC  = expand("02fqc/{sample}_fastqc.zip", sample = ALL_SAMPLES)
+ALL_FASTQC = expand("02fqc/{sample}_fastqc.zip", sample = ALL_SAMPLES)
 
 rule all:
     input: ALL_FASTQC + ALL_BAM + ALL_PEAKS + ALL_CLEAN_FASTQ
@@ -43,6 +55,26 @@ rule merge_fastqs:
     message: "merging fastqs gunzip -c {input} > {output}"
     shell: "gunzip -c {input} > {output} 2> {log}"
 
+
+# Optional: download SRA run using sra-tools if rawfastqs/<sample>/ does not exist
+rule download_sra:
+    output: directory("rawfastqs/{sample}")
+    threads: 2
+    conda: "envs/sra-tools.yaml"
+    message: "download SRA for {wildcards.sample} into {output}"
+    shell:
+        """
+        # Create output dir
+        mkdir -p {output}
+        # Use fasterq-dump to write gzipped reads into sample folder
+        fasterq-dump -O {output} --split-files --gzip {wildcards.sample} 2> 00log/{wildcards.sample}_fasterq-dump.log
+        # Rename output files to the lane-style expected by the pipeline if only one file is present
+        # fasterq-dump will produce {sample}_1.fastq.gz and {sample}_2.fastq.gz (for paired) or {sample}.fastq.gz (single)
+        for f in {output}/*; do base=$(basename $f); \
+            if [[ $base == *.fastq.gz ]]; then mv "$f" "{output}/{wildcards.sample}_L001.fastq.gz"; fi; \
+        done
+        """
+
 rule fastqc:
     input:  "01seq/{sample}.fastq"
     output: "02fqc/{sample}_fastqc.zip", "02fqc/{sample}_fastqc.html"
@@ -52,9 +84,9 @@ rule fastqc:
         mem  = 2 ,
         time = 20
     message: "fastqc {input}: {threads} / {resources.mem}"
+    conda: "envs/fastqc.yaml"
     shell:
         """
-        module load fastqc
         fastqc -o 02fqc -f fastq --noextract {input[0]}
         """
 
@@ -68,9 +100,9 @@ rule clean_fastq:
         mem= 2,
         time= 30
     message: "clean_fastq {input}: {threads} threads / {resources.mem}"
+    conda: "envs/trimmomatic.yaml"
     shell:
         """
-        module load fastxtoolkit
         trimmomatic SE {input} {output} \
         ILLUMINACLIP:Truseq_adaptor.fa:2:30:10 LEADING:3 \
         TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 2> {log}
@@ -87,9 +119,9 @@ rule align:
         time   = 45
     message: "aligning {input}: {threads} threads / {resources.mem}"
     log: "00log/{sample}.align"
+    conda: "envs/bowtie_samtools.yaml"
     shell:
         """
-        module load bowtie/1.1.1 samtools/1.2
         bowtie {params.bowtie} --threads={threads} {config[idx_bt1]} {input} 2> {log} \
             | samtools view -Sb - \
             >  {output}
@@ -104,9 +136,9 @@ rule sort_bam:
         mem  = 12,
         time = 15
     message: "sort_bam {input}: {threads} threads / {resources.mem}"
+    conda: "envs/samtools.yaml"
     shell:
         """
-        module load samtools/1.2
         samtools sort -m 1G -@ {threads} -O bam -T {output}.tmp {input} > {output} 2> {log}
         """
 
@@ -119,9 +151,9 @@ rule index_bam:
         mem   = 500,
         time  = 10
     message: "index_bam {input}: {threads} threads / {resources.mem}"
+    conda: "envs/samtools.yaml"
     shell:
         """
-        module load samtools/1.2
         samtools index {input} 2> {log}
         """
 
@@ -134,9 +166,9 @@ rule flagstat_bam:
         mem   = 500,
         time  = 10
     message: "flagstat_bam {input}: {threads} threads / {resources.mem}"
+    conda: "envs/samtools.yaml"
     shell:
         """
-        module load samtools/1.2
         samtools flagstat {input} > {output} 2> {log}
         """
 
@@ -150,12 +182,13 @@ rule call_peaks:
         mem  = 4,
         time = 30
 
-    message: "call_peaks macs14 {input}: {threads} threads / {resources.mem}"
+    message: "call_peaks macs2 {input}: {threads} threads / {resources.mem}"
+    conda: "envs/macs_r.yaml"
     shell:
         """
-        module load macs14 R
-        macs14 -t {input.case} \
-            -c {input.control} -f BAM -g {config[macs_g]} \
-            --outdir 04peak -n {params.name} -p 10e-5 &> {log}
-            cd 05peak && Rscript {params.name}_model.r
+        # Using MACS2 instead of MACS1.4; if you prefer MACS1.4, adjust the env
+        macs2 callpeak -t {input.case} -c {input.control} -f BAM -g {config[macs_g]} \
+            -n {params.name} --outdir 04peak -q 0.01 &> {log}
+        # older pipeline used an R modelling script; skip or run if exists
+        if [ -f 05peak/{params.name}_model.r ]; then Rscript 05peak/{params.name}_model.r; fi
         """

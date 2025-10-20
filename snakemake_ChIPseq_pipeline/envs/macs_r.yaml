@@ -1,0 +1,10 @@
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+
+dependencies:
+  - macs2
+  - r-base=4.0
+  - r-ggplot2
+  - r-reshape2
